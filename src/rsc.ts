@@ -63,6 +63,18 @@ export async function extractNextRscProps<TSchema extends StandardSchemaV1>(
 }
 
 /**
+ * Fetches a Next.js App Router page and returns the props of every React
+ * element in the RSC tree, unvalidated, in breadth-first order per model chunk.
+ */
+export async function extractAllNextRscProps(
+  url: string | URL,
+  options: FetchOptions = {},
+): Promise<unknown[]> {
+  const page = await fetchHtml(url, options);
+  return findAllNextRscProps(parseNextRscData(page.html, { url: page.url }));
+}
+
+/**
  * Searches the model chunks breadth-first for a React element whose `props`
  * satisfy `schema`. Returns `undefined` when nothing matches.
  */
@@ -70,6 +82,27 @@ export async function findNextRscProps<TSchema extends StandardSchemaV1>(
   chunks: Pick<NextRscChunks, "model">,
   schema: TSchema,
 ): Promise<{ value: StandardSchemaV1.InferOutput<TSchema> } | undefined> {
+  for (const props of walkNextRscProps(chunks)) {
+    const result = await validate(schema, props);
+    if (result.success) {
+      return { value: result.value };
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * Returns the props of every React element in the model chunks, unvalidated,
+ * in breadth-first order per chunk.
+ */
+export function findAllNextRscProps(chunks: Pick<NextRscChunks, "model">): unknown[] {
+  return [...walkNextRscProps(chunks)];
+}
+
+function* walkNextRscProps(
+  chunks: Pick<NextRscChunks, "model">,
+): Generator<Record<string, unknown>> {
   for (const chunk of chunks.model) {
     const queue: unknown[] = [chunk.value];
     const seen = new WeakSet<object>();
@@ -84,10 +117,7 @@ export async function findNextRscProps<TSchema extends StandardSchemaV1>(
       seen.add(node);
 
       if (isObjectRecord(node.props)) {
-        const result = await validate(schema, node.props);
-        if (result.success) {
-          return { value: result.value };
-        }
+        yield node.props;
       }
 
       if (Array.isArray(node)) {
@@ -104,8 +134,6 @@ export async function findNextRscProps<TSchema extends StandardSchemaV1>(
       }
     }
   }
-
-  return undefined;
 }
 
 /** Decodes the inline `self.__next_f.push(...)` RSC payload from Next.js page HTML. */

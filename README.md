@@ -52,6 +52,14 @@ const { initialData } = await extractNextRscProps("https://example.com/store/acm
 
 This decodes the page's Flight payload and does a breadth-first walk of every model chunk. It returns the props of the first React element whose `props` pass validation.
 
+To get the props of every React element in the tree without validating any of them, use `extractAllNextRscProps`:
+
+```ts
+import { extractAllNextRscProps } from "scrape-ts";
+
+const allProps = await extractAllNextRscProps("https://example.com"); // unknown[]
+```
+
 To get the raw decoded chunks, grouped by chunk type (`model`, `text`, `hint`, `module`, ...), use `extractNextRscData`:
 
 ```ts
@@ -65,13 +73,14 @@ for (const chunk of chunks.model) console.log(chunk.id, chunk.value);
 
 Each fetching helper has a pure counterpart that takes an HTML string and makes no network request:
 
-| Fetches a URL           | Parses HTML                                        |
-| ----------------------- | -------------------------------------------------- |
-| `extractJsonScriptData` | `parseJsonScriptData(html, { schema })`            |
-| `extractJsonScripts`    | `parseJsonScripts(html)`                           |
-| `extractNextRscData`    | `parseNextRscData(html)`                           |
-| `extractNextRscProps`   | `findNextRscProps(parseNextRscData(html), schema)` |
-| `fetchHtml`             | n/a                                                |
+| Fetches a URL            | Parses HTML                                        |
+| ------------------------ | -------------------------------------------------- |
+| `extractJsonScriptData`  | `parseJsonScriptData(html, { schema })`            |
+| `extractJsonScripts`     | `parseJsonScripts(html)`                           |
+| `extractNextRscData`     | `parseNextRscData(html)`                           |
+| `extractNextRscProps`    | `findNextRscProps(parseNextRscData(html), schema)` |
+| `extractAllNextRscProps` | `findAllNextRscProps(parseNextRscData(html))`      |
+| `fetchHtml`              | n/a                                                |
 
 ## Fetch options
 

@@ -2,8 +2,10 @@ import * as v from "valibot";
 import { describe, expect, test } from "vite-plus/test";
 import { z } from "zod";
 import {
+  extractAllNextRscProps,
   extractNextRscData,
   extractNextRscProps,
+  findAllNextRscProps,
   findNextRscProps,
   parseNextRscData,
 } from "../src/index.ts";
@@ -70,4 +72,18 @@ test("extractNextRscData fetches and decodes", async () => {
   const { fetch } = mockFetch(() => htmlResponse(html));
   const chunks = await extractNextRscData("https://example.com", { fetch });
   expect(chunks.model).toHaveLength(2);
+});
+
+test("findAllNextRscProps returns every element's props in breadth-first order", () => {
+  const props = findAllNextRscProps(parseNextRscData(html));
+  expect(props).toHaveLength(3);
+  expect(props[0]).toMatchObject({ className: "root" });
+  expect(props[1]).toEqual({ title: "Hi" });
+  expect(props[2]).toMatchObject({ initialData: { handle: "acme" }, children: "content" });
+});
+
+test("extractAllNextRscProps fetches and collects props", async () => {
+  const { fetch } = mockFetch(() => htmlResponse(html));
+  const props = await extractAllNextRscProps("https://example.com", { fetch });
+  expect(props).toHaveLength(3);
 });

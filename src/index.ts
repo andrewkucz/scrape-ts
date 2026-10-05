@@ -11,8 +11,10 @@ export {
 } from "./json-script.ts";
 export type { ExtractJsonScriptDataOptions, ParseJsonScriptDataOptions } from "./json-script.ts";
 export {
+  extractAllNextRscProps,
   extractNextRscData,
   extractNextRscProps,
+  findAllNextRscProps,
   findNextRscProps,
   parseNextRscData,
 } from "./rsc.ts";
