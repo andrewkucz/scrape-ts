@@ -1,32 +1,30 @@
-import { load } from "cheerio";
 import { ScrapeError } from "./errors.ts";
 import { type FetchOptions, fetchHtml } from "./fetch-html.ts";
+import { type HtmlScript, readHtmlScripts } from "./html-scripts.ts";
 import { type StandardSchemaV1, validate } from "./standard-schema.ts";
 
-const JSON_SCRIPT_SELECTOR = 'script[type="application/json"], script[type="application/ld+json"]';
-
-export interface ParseJsonScriptDataOptions<TSchema extends StandardSchemaV1> {
+export interface ParseFirstMatchingJsonScriptOptions<TSchema extends StandardSchemaV1> {
   /** Any Standard Schema (Zod, Valibot, ArkType, ...). The first script that validates is returned. */
   schema: TSchema;
   /** Used in error messages. */
   url?: string;
 }
 
-export interface ExtractJsonScriptDataOptions<TSchema extends StandardSchemaV1>
-  extends FetchOptions, Omit<ParseJsonScriptDataOptions<TSchema>, "url"> {}
+export interface FetchFirstMatchingJsonScriptOptions<TSchema extends StandardSchemaV1>
+  extends FetchOptions, Omit<ParseFirstMatchingJsonScriptOptions<TSchema>, "url"> {}
 
 /**
  * Fetches a page and returns the first `application/json` or
  * `application/ld+json` script block that satisfies `schema`.
  */
-export async function extractJsonScriptData<TSchema extends StandardSchemaV1>(
+export async function fetchFirstMatchingJsonScript<TSchema extends StandardSchemaV1>(
   url: string | URL,
-  options: ExtractJsonScriptDataOptions<TSchema>,
+  options: FetchFirstMatchingJsonScriptOptions<TSchema>,
 ): Promise<StandardSchemaV1.InferOutput<TSchema>> {
   const { schema, ...fetchOptions } = options;
   const page = await fetchHtml(url, fetchOptions);
 
-  return parseJsonScriptData(page.html, { schema, url: page.url });
+  return parseFirstMatchingJsonScript(page.html, { schema, url: page.url });
 }
 
 /**
@@ -34,18 +32,18 @@ export async function extractJsonScriptData<TSchema extends StandardSchemaV1>(
  * `html` (in document order) that satisfies `schema`. Malformed JSON blocks are
  * skipped.
  */
-export async function parseJsonScriptData<TSchema extends StandardSchemaV1>(
+export async function parseFirstMatchingJsonScript<TSchema extends StandardSchemaV1>(
   html: string,
-  options: ParseJsonScriptDataOptions<TSchema>,
+  options: ParseFirstMatchingJsonScriptOptions<TSchema>,
 ): Promise<StandardSchemaV1.InferOutput<TSchema>> {
   const { schema, url } = options;
-  const scripts = readJsonScripts(html);
+  const scripts = readHtmlScripts(html).filter((script) => script.isJson && script.content.trim());
 
-  for (const json of scripts) {
+  for (const script of scripts) {
     let data: unknown;
 
     try {
-      data = parseJsonScript(json);
+      data = parseJsonValue(script.content);
     } catch {
       // A malformed JSON block should not prevent checking the others.
       continue;
@@ -69,12 +67,12 @@ export async function parseJsonScriptData<TSchema extends StandardSchemaV1>(
  * Fetches a page and returns the parsed contents of every `application/json`
  * and `application/ld+json` script block, unvalidated, in document order.
  */
-export async function extractJsonScripts(
+export async function fetchAllJsonScripts(
   url: string | URL,
   options: FetchOptions = {},
 ): Promise<unknown[]> {
   const page = await fetchHtml(url, options);
-  return parseJsonScripts(page.html);
+  return parseAllJsonScripts(page.html);
 }
 
 /**
@@ -82,40 +80,36 @@ export async function extractJsonScripts(
  * `application/ld+json` script block in `html`, unvalidated, in document order.
  * Malformed blocks are skipped.
  */
-export function parseJsonScripts(html: string): unknown[] {
-  const results: unknown[] = [];
+export function parseAllJsonScripts(html: string): unknown[] {
+  return parseJsonScriptPayloads(readHtmlScripts(html)).values;
+}
 
-  for (const json of readJsonScripts(html)) {
+/** Internal parser that retains the source scripts for successful payloads. */
+export function parseJsonScriptPayloads(scripts: HtmlScript[]): {
+  values: unknown[];
+  scripts: HtmlScript[];
+} {
+  const results: unknown[] = [];
+  const parsedScripts: HtmlScript[] = [];
+
+  for (const script of scripts) {
+    if (!script.isJson) continue;
     try {
-      results.push(parseJsonScript(json));
+      results.push(parseJsonValue(script.content));
+      parsedScripts.push(script);
     } catch {
       // Skip malformed blocks.
     }
   }
 
-  return results;
-}
-
-function readJsonScripts(html: string): string[] {
-  const $ = load(html);
-  const scripts: string[] = [];
-
-  $(JSON_SCRIPT_SELECTOR).each((_, element) => {
-    const json = $(element).html();
-
-    if (json?.trim()) {
-      scripts.push(json);
-    }
-  });
-
-  return scripts;
+  return { values: results, scripts: parsedScripts };
 }
 
 /**
  * Parses JSON, retrying with raw control characters inside string literals
  * escaped — a common defect in hand-rolled JSON-LD.
  */
-export function parseJsonScript(json: string): unknown {
+export function parseJsonValue(json: string): unknown {
   try {
     return JSON.parse(json);
   } catch (cause) {

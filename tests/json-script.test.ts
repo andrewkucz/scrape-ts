@@ -2,10 +2,10 @@ import * as v from "valibot";
 import { describe, expect, test } from "vite-plus/test";
 import { z } from "zod";
 import {
-  extractJsonScriptData,
-  extractJsonScripts,
-  parseJsonScriptData,
-  parseJsonScripts,
+  fetchFirstMatchingJsonScript,
+  fetchAllJsonScripts,
+  parseFirstMatchingJsonScript,
+  parseAllJsonScripts,
   type StandardSchemaV1,
 } from "../src/index.ts";
 import { htmlResponse, mockFetch } from "./helpers.ts";
@@ -29,13 +29,13 @@ const schemas: [string, StandardSchemaV1<unknown, { name: string; duration: numb
 
 describe.each(schemas)("with %s", (_name, schema) => {
   test("returns the first JSON script block matching the schema", async () => {
-    const data = await parseJsonScriptData(page, { schema });
+    const data = await parseFirstMatchingJsonScript(page, { schema });
     expect(data).toMatchObject({ name: "Line one\nline two", duration: 42 });
   });
 
-  test("extractJsonScriptData fetches and parses", async () => {
+  test("fetchFirstMatchingJsonScript fetches and parses", async () => {
     const { fetch, calls } = mockFetch(() => htmlResponse(page));
-    const data = await extractJsonScriptData("https://example.com/video", { schema, fetch });
+    const data = await fetchFirstMatchingJsonScript("https://example.com/video", { schema, fetch });
 
     expect(data.duration).toBe(42);
     expect(calls[0]?.url).toBe("https://example.com/video");
@@ -44,7 +44,7 @@ describe.each(schemas)("with %s", (_name, schema) => {
 
 test("searches application/json scripts too", async () => {
   const { fetch } = mockFetch(() => htmlResponse(page));
-  const data = await extractJsonScriptData("https://example.com", {
+  const data = await fetchFirstMatchingJsonScript("https://example.com", {
     fetch,
     schema: z.object({ video: z.object({ id: z.string() }) }),
   });
@@ -54,11 +54,13 @@ test("searches application/json scripts too", async () => {
 
 test("supports async schemas", async () => {
   const schema = z.object({ name: z.string() }).refine(async (value) => value.name === "Acme");
-  await expect(parseJsonScriptData(page, { schema })).resolves.toMatchObject({ name: "Acme" });
+  await expect(parseFirstMatchingJsonScript(page, { schema })).resolves.toMatchObject({
+    name: "Acme",
+  });
 });
 
 test("throws NO_MATCH when nothing validates", async () => {
-  const error = await parseJsonScriptData(page, {
+  const error = await parseFirstMatchingJsonScript(page, {
     schema: z.object({ missing: z.string() }),
     url: "https://example.com",
   }).catch((e: unknown) => e);
@@ -66,13 +68,13 @@ test("throws NO_MATCH when nothing validates", async () => {
   expect(error).toMatchObject({ code: "NO_MATCH", url: "https://example.com" });
 });
 
-test("extractJsonScripts fetches and returns every parseable block", async () => {
+test("fetchAllJsonScripts fetches and returns every parseable block", async () => {
   const { fetch } = mockFetch(() => htmlResponse(page));
-  await expect(extractJsonScripts("https://example.com", { fetch })).resolves.toHaveLength(3);
+  await expect(fetchAllJsonScripts("https://example.com", { fetch })).resolves.toHaveLength(3);
 });
 
-test("parseJsonScripts returns every parseable block", () => {
-  expect(parseJsonScripts(page)).toEqual([
+test("parseAllJsonScripts returns every parseable block", () => {
+  expect(parseAllJsonScripts(page)).toEqual([
     { "@type": "Organization", name: "Acme" },
     { "@type": "VideoObject", name: "Line one\nline two", duration: 42 },
     { video: { id: "abc" } },

@@ -1,7 +1,7 @@
 import { type Chunk, createFlightResponse, processBinaryChunk } from "@rsc-parser/react-client";
-import { load } from "cheerio";
 import { ScrapeError } from "./errors.ts";
 import { type FetchOptions, fetchHtml } from "./fetch-html.ts";
+import { type HtmlScript, readHtmlScripts } from "./html-scripts.ts";
 import { type StandardSchemaV1, validate } from "./standard-schema.ts";
 
 export type { Chunk as RscChunk };
@@ -11,13 +11,21 @@ export type NextRscChunks = {
   [Type in Chunk["type"]]: Extract<Chunk, { type: Type }>[];
 };
 
-export interface ParseNextRscDataOptions {
+export interface ParseNextRscChunksOptions {
   /** Used in error messages. */
   url?: string;
 }
 
-export interface ExtractNextRscPropsOptions<TSchema extends StandardSchemaV1> extends FetchOptions {
+export interface FetchFirstMatchingNextRscPropsOptions<
+  TSchema extends StandardSchemaV1,
+> extends FetchOptions {
   /** Any Standard Schema (Zod, Valibot, ArkType, ...) describing the props to find. */
+  schema: TSchema;
+}
+
+export interface ParseFirstMatchingNextRscPropsOptions<
+  TSchema extends StandardSchemaV1,
+> extends ParseNextRscChunksOptions {
   schema: TSchema;
 }
 
@@ -30,32 +38,40 @@ interface ScriptParseDiagnostic {
 }
 
 /** Fetches a Next.js App Router page and decodes its inline RSC (Flight) payload. */
-export async function extractNextRscData(
+export async function fetchNextRscChunks(
   url: string | URL,
   options: FetchOptions = {},
 ): Promise<NextRscChunks> {
   const page = await fetchHtml(url, options);
-  return parseNextRscData(page.html, { url: page.url });
+  return parseNextRscChunks(page.html, { url: page.url });
 }
 
 /**
  * Fetches a Next.js App Router page and returns the props of the first React
  * element in the RSC tree whose props satisfy `schema`.
  */
-export async function extractNextRscProps<TSchema extends StandardSchemaV1>(
+export async function fetchFirstMatchingNextRscProps<TSchema extends StandardSchemaV1>(
   url: string | URL,
-  options: ExtractNextRscPropsOptions<TSchema>,
+  options: FetchFirstMatchingNextRscPropsOptions<TSchema>,
 ): Promise<StandardSchemaV1.InferOutput<TSchema>> {
   const { schema, ...fetchOptions } = options;
   const page = await fetchHtml(url, fetchOptions);
-  const chunks = parseNextRscData(page.html, { url: page.url });
-  const props = await findNextRscProps(chunks, schema);
+  return parseFirstMatchingNextRscProps(page.html, { schema, url: page.url });
+}
+
+/** Parses HTML and returns the first props matching the schema, or throws NO_MATCH. */
+export async function parseFirstMatchingNextRscProps<TSchema extends StandardSchemaV1>(
+  html: string,
+  options: ParseFirstMatchingNextRscPropsOptions<TSchema>,
+): Promise<StandardSchemaV1.InferOutput<TSchema>> {
+  const chunks = parseNextRscChunks(html, options);
+  const props = await findFirstMatchingNextRscProps(chunks, options.schema);
 
   if (props === undefined) {
     throw new ScrapeError(
-      `No React Server Component props matched the provided schema for ${page.url}`,
+      `No React Server Component props matched the provided schema for ${options.url ?? "the provided HTML"}`,
       "NO_MATCH",
-      { url: page.url },
+      { url: options.url },
     );
   }
 
@@ -66,19 +82,27 @@ export async function extractNextRscProps<TSchema extends StandardSchemaV1>(
  * Fetches a Next.js App Router page and returns the props of every React
  * element in the RSC tree, unvalidated, in breadth-first order per model chunk.
  */
-export async function extractAllNextRscProps(
+export async function fetchAllNextRscProps(
   url: string | URL,
   options: FetchOptions = {},
 ): Promise<unknown[]> {
   const page = await fetchHtml(url, options);
-  return findAllNextRscProps(parseNextRscData(page.html, { url: page.url }));
+  return parseAllNextRscProps(page.html, { url: page.url });
+}
+
+/** Parses HTML and returns all element props, unvalidated, in breadth-first order per chunk. */
+export function parseAllNextRscProps(
+  html: string,
+  options: ParseNextRscChunksOptions = {},
+): unknown[] {
+  return collectAllNextRscProps(parseNextRscChunks(html, options));
 }
 
 /**
  * Searches the model chunks breadth-first for a React element whose `props`
  * satisfy `schema`. Returns `undefined` when nothing matches.
  */
-export async function findNextRscProps<TSchema extends StandardSchemaV1>(
+export async function findFirstMatchingNextRscProps<TSchema extends StandardSchemaV1>(
   chunks: Pick<NextRscChunks, "model">,
   schema: TSchema,
 ): Promise<{ value: StandardSchemaV1.InferOutput<TSchema> } | undefined> {
@@ -96,7 +120,7 @@ export async function findNextRscProps<TSchema extends StandardSchemaV1>(
  * Returns the props of every React element in the model chunks, unvalidated,
  * in breadth-first order per chunk.
  */
-export function findAllNextRscProps(chunks: Pick<NextRscChunks, "model">): unknown[] {
+export function collectAllNextRscProps(chunks: Pick<NextRscChunks, "model">): unknown[] {
   return [...walkNextRscProps(chunks)];
 }
 
@@ -137,12 +161,22 @@ function* walkNextRscProps(
 }
 
 /** Decodes the inline `self.__next_f.push(...)` RSC payload from Next.js page HTML. */
-export function parseNextRscData(
+export function parseNextRscChunks(
   html: string,
-  options: ParseNextRscDataOptions = {},
+  options: ParseNextRscChunksOptions = {},
 ): NextRscChunks {
+  return parseNextRscScriptPayloads(readHtmlScripts(html), options).chunks;
+}
+
+/** Internal decoder retaining the scripts that supplied type-1 payload fragments. */
+export function parseNextRscScriptPayloads(
+  scripts: HtmlScript[],
+  options: ParseNextRscChunksOptions = {},
+  allowMissing = false,
+): { chunks: NextRscChunks; scripts: HtmlScript[] } {
   const location = options.url ?? "the provided HTML";
-  const { pushes, foundPushReference, diagnostics } = extractPushesFromHtml(html);
+  const { pushes, foundPushReference, diagnostics, payloadScripts } =
+    extractPushesFromScripts(scripts);
 
   if (pushes.length === 0) {
     if (foundPushReference) {
@@ -153,6 +187,7 @@ export function parseNextRscData(
       );
     }
 
+    if (allowMissing) return { chunks: groupChunks([]), scripts: [] };
     throw new ScrapeError(
       `No Next.js Flight data was found in inline script tags for ${location}`,
       "RSC_NOT_FOUND",
@@ -167,6 +202,7 @@ export function parseNextRscData(
     .map((entry) => entry[1]);
 
   if (payloadChunks.length === 0) {
+    if (allowMissing && diagnostics.length === 0) return { chunks: groupChunks([]), scripts: [] };
     const diagnosticSuffix =
       diagnostics.length > 0 ? ` Script diagnostics: ${formatDiagnostics(diagnostics)}` : "";
     throw new ScrapeError(
@@ -176,7 +212,10 @@ export function parseNextRscData(
     );
   }
 
-  return groupChunks(decodeFlightPayload(payloadChunks.join(""), location, options.url));
+  return {
+    chunks: groupChunks(decodeFlightPayload(payloadChunks.join(""), location, options.url)),
+    scripts: [...payloadScripts],
+  };
 }
 
 function decodeFlightPayload(flightPayload: string, location: string, url?: string): Chunk[] {
@@ -219,18 +258,20 @@ function groupChunks(chunks: Chunk[]): NextRscChunks {
   return grouped;
 }
 
-function extractPushesFromHtml(html: string): {
+function extractPushesFromScripts(scripts: HtmlScript[]): {
   pushes: unknown[][];
   foundPushReference: boolean;
   diagnostics: ScriptParseDiagnostic[];
+  payloadScripts: Set<HtmlScript>;
 } {
-  const $ = load(html);
+  const payloadScripts = new Set<HtmlScript>();
   const pushes: unknown[][] = [];
   const diagnostics: ScriptParseDiagnostic[] = [];
   let foundPushReference = false;
 
-  $("script").each((scriptIndex, element) => {
-    const scriptContent = $(element).html() ?? "";
+  scripts.forEach((script, scriptIndex) => {
+    if (script.isJson) return;
+    const scriptContent = script.content;
     let searchFrom = 0;
 
     while (searchFrom < scriptContent.length) {
@@ -270,6 +311,9 @@ function extractPushesFromHtml(html: string): {
 
         if (Array.isArray(parsedArgument)) {
           pushes.push(parsedArgument);
+          if (parsedArgument[0] === 1 && typeof parsedArgument[1] === "string") {
+            payloadScripts.add(script);
+          }
         } else {
           diagnostics.push({
             scriptIndex,
@@ -289,7 +333,7 @@ function extractPushesFromHtml(html: string): {
     }
   });
 
-  return { pushes, foundPushReference, diagnostics };
+  return { pushes, foundPushReference, diagnostics, payloadScripts };
 }
 
 function findOpeningParenthesis(source: string, startIndex: number): number {
